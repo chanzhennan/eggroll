@@ -41,7 +41,28 @@ RocksDBStore::~RocksDBStore() {
         _db->Close();
 
         if (_isDeleteOnExit) {
+            size_t n;
+            n = std::count(_dbDir.begin(), _dbDir.end(), '/');
+            std::stringstream ss;
+            string tableName;
+            ss << this->storeInfo.getTableName();
+            ss >> tableName;
+            size_t tableNamePos = _dbDir.rfind(tableName);
+            cout << "dbDir: " << _dbDir
+            << ", storeInfo: " << this->storeInfo.toString()
+            << ", tableName: " << tableName
+            << ", tableNamePos: " << tableNamePos
+            << ", size: " << _dbDir.size() << endl;
+            
             rocksdb::DestroyDB(_dbDir, rocksdb::Options());
+            if (n >= 4 && _dbDir.substr(0, 4) != "////") {
+                string dirToRemove = _dbDir.substr(0, tableNamePos) + tableName;
+                LOG(INFO) << "[LMDBStore::destroy] dirToRemove: " << dirToRemove << endl;
+                cout << "dirToRemove: " << dirToRemove << endl;
+                if (boost::filesystem::exists(dirToRemove) && boost::filesystem::is_directory(dirToRemove)) {
+                    boost::filesystem::remove_all(dirToRemove);
+                }
+            }
         }
         delete this->_db;
         this->_db = NULL;
@@ -64,7 +85,7 @@ bool RocksDBStore::init(string& dbDir, StoreInfo& storeInfo) {
             return false;
         }
         this->_dbDir = dbDir;
-
+        this->storeInfo = storeInfo;
         boost::filesystem::path dst = this->_dbDir;
         boost::filesystem::create_directories(dst);
 
