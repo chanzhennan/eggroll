@@ -21,6 +21,7 @@ from typing import Iterable, Sequence, Generator
 import time
 import socket
 import random
+import math
 
 import grpc
 import copy
@@ -33,7 +34,7 @@ from eggroll.api.utils import cloudpickle
 from eggroll.api.utils.core import string_to_bytes, bytes_to_string
 from eggroll.api.utils.iter_utils import split_every, split_every_yield, split_every_generator
 from eggroll.api.core import EggrollSession
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, wait, ALL_COMPLETED
 from multiprocessing import cpu_count
 
 EGGROLL_ROLL_HOST = 'eggroll.roll.host'
@@ -207,8 +208,77 @@ class _DTable(object):
     def put(self, k, v, use_serialize=True):
         _EggRoll.get_instance().put(self, k, v, use_serialize=use_serialize)
 
-    def put_all(self, kv_list: Iterable, use_serialize=True, chunk_size=100000, include_key=True):
+    def put_all(self, kv_list: Iterable, use_serialize=True, chunk_size=100000, include_key=True, single_process=False):
         return _EggRoll.get_instance().put_all(self, kv_list, use_serialize=use_serialize, chunk_size=chunk_size, include_key=include_key, single_process=single_process)
+
+    def process_chunk(self, func, file_path, begin_offset, end_offset, use_serialize, include_key):
+        self.set_gc_disable()
+        fp = open(file_path, 'r')
+        fp.seek(begin_offset, 0)
+        chunked_iter = list()
+
+        chunk_size = end_offset - begin_offset
+        buffer = fp.read(chunk_size)
+        buffer_split = buffer.split('\n')
+        del(buffer_split[-1])
+
+        for line in buffer_split:
+            key, value = func(line)
+            chunked_iter.append((key, value))
+
+        if len(chunked_iter) == 0:
+            fp.close()
+            return
+
+        host = _EggRoll.get_instance().host
+        port = _EggRoll.get_instance().port
+        _EggRoll.get_instance().get_channel().close()
+        _EggRoll.get_instance().channel = grpc.insecure_channel(target="{}:{}".format(host, port),
+                                             options=[('grpc.max_send_message_length', -1),
+                                                      ('grpc.max_receive_message_length', -1)])
+
+        _EggRoll.get_instance().kv_stub = kv_pb2_grpc.KVServiceStub(_EggRoll.get_instance().channel)
+        _EggRoll.get_instance().proc_stub = processor_pb2_grpc.ProcessServiceStub(_EggRoll.get_instance().channel)
+
+        self.put_all(chunked_iter, use_serialize=use_serialize,
+                     chunk_size=100000, include_key=include_key,
+                     single_process=True)
+        fp.close()
+
+    def get_offset(self, file_path, begin_offset, chunk_size):
+        fp = open(file_path, 'rb')
+        fp.seek(begin_offset + chunk_size, 0)
+        while True:
+            fp.seek(-1, 1)
+            if fp.read(1) == b'\n' or fp.tell() == 1:
+                ret = fp.tell()
+                fp.close()
+                return ret 
+            fp.seek(-1, 1) 
+        fp.close()
+
+    def put_file(self, file_path, func, use_serialize=True, chunk_size=1000000, include_key=True):
+        thread_pool_size = cpu_count() + 8
+        task_status_list = []
+
+        with ProcessPoolExecutor(thread_pool_size) as executor:
+            begin_offset = 0
+            end_offset = 0
+            file_size = os.path.getsize(file_path)
+            while end_offset < file_size:
+                for i in range(thread_pool_size):
+                    end_offset = file_size if (begin_offset + chunk_size) > file_size else self.get_offset(file_path, begin_offset, chunk_size)
+                    if end_offset > file_size:
+                        break
+                    task_status = executor.submit(_DTable.process_chunk, self,
+                                                  func, file_path, begin_offset,
+                                                  end_offset,
+                                                  use_serialize=use_serialize,
+                                                  include_key=include_key)
+                    begin_offset = end_offset
+                    task_status_list.append(task_status)
+                wait(task_status_list, return_when=ALL_COMPLETED)
+                task_status_list.clear()                
 
     def get(self, k, use_serialize=True):
         return _EggRoll.get_instance().get(self, k, use_serialize=use_serialize)
