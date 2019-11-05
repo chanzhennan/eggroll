@@ -39,6 +39,7 @@ public:
     bool destroy();
     long count();
     string toString();
+	static std::mutex mutex_t;
 private:
     void iterateAll();
     long PAYLOAD_THREASHOLD = 2L * 1024 * 1024;

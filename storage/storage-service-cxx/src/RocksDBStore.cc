@@ -27,6 +27,8 @@ using rocksdb::Status;
 using rocksdb::WriteBatch;
 using rocksdb::WriteOptions;
 
+std::mutex RocksDBStore::mutex_t;
+
 RocksDBStore::RocksDBStore() {
     this->_db = NULL;
 }
@@ -53,7 +55,7 @@ RocksDBStore::~RocksDBStore() {
             << ", tableName: " << tableName
             << ", tableNamePos: " << tableNamePos
             << ", size: " << _dbDir.size() << endl;
-            
+
             rocksdb::DestroyDB(_dbDir, rocksdb::Options());
             if (n >= 4 && _dbDir.substr(0, 4) != "////") {
                 string dirToRemove = _dbDir.substr(0, tableNamePos) + tableName;
@@ -66,6 +68,7 @@ RocksDBStore::~RocksDBStore() {
         }
         delete this->_db;
         this->_db = NULL;
+		mutex_t.unlock();
     }
 }
 
@@ -94,6 +97,7 @@ bool RocksDBStore::init(string& dbDir, StoreInfo& storeInfo) {
         options.OptimizeLevelStyleCompaction();
         options.create_if_missing = true;
 
+        mutex_t.lock();
         Status s = DB::Open(options, _dbDir, &_db);
         printStatus(s, "init");
         assert(s.ok());
