@@ -68,7 +68,7 @@ RocksDBStore::~RocksDBStore() {
         }
         delete this->_db;
         this->_db = NULL;
-		mutex_t.unlock();
+        mutex_t.unlock();
     }
 }
 
