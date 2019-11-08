@@ -15,6 +15,7 @@
 #
 
 import uuid
+import datetime
 from functools import partial
 from operator import is_not
 from typing import Iterable, Sequence, Generator
@@ -117,8 +118,27 @@ def init(session_id=None, server_conf_path="eggroll/conf/server_conf.json", eggr
     eggroll_session.set_gc_table(eggroll_runtime)
     eggroll_session.add_cleanup_task(eggroll_session.clean_duplicated_table)
 
-def _get_meta(_table):
-    return ('store_type', _table._type), ('table_name', _table._name), ('name_space', _table._namespace)
+def _get_ip():
+    try:
+        host_name = socket.gethostname()
+        host_ip = socket.gethostbyname(host_name)
+    except socket.gaierror as e:
+        host_name = 'unknown'
+        host_ip = 'unknown'
+    return host_name, host_ip
+
+
+def _get_meta(_table, _session_id = 'unknown'):
+    return ('store_type', _table._type), \
+           ('table_name', _table._name), \
+           ('name_space', _table._namespace), \
+           _get_call_seq(_session_id)
+
+
+def _get_call_seq(_session_id):
+    hostname, ip = _get_ip()
+    timestamp = datetime.datetime.timestamp(datetime.datetime.now())
+    return ('call_seq', '_'.join([_session_id, hostname, ip, str(os.getpid()), str(threading.currentThread().ident), str(timestamp)]))
 
 
 def to_pb_store_type(_type : StoreType, persistent=False):
@@ -437,7 +457,7 @@ class _EggRoll(object):
         return func_id, pickled_function
 
     def _create_table(self, create_table_info):
-        info = self.kv_stub.createIfAbsent(create_table_info)
+        info = self.kv_stub.createIfAbsent(create_table_info, metadata=(_get_call_seq(self.session_id),))
         if storage_basic_pb2.StorageType.Name(info.storageLocator.type) == storage_basic_pb2.StorageType.Name(storage_basic_pb2.IN_MEMORY):
             LOGGER.info("create in_memory table:{}".format(info.storageLocator.name))
             LOGGER.info("table func:{}".format(list(self.eggroll_session._gc_table.collect())))
@@ -488,11 +508,11 @@ class _EggRoll(object):
 
     def put(self, _table, k, v, use_serialize=True):
         k, v = self.kv_to_bytes(k=k, v=v, use_serialize=use_serialize)
-        self.kv_stub.put(kv_pb2.Operand(key=k, value=v), metadata=_get_meta(_table))
+        self.kv_stub.put(kv_pb2.Operand(key=k, value=v), metadata=_get_meta(_table, self.session_id))
 
     def put_if_absent(self, _table, k, v, use_serialize=True):
         k, v = self.kv_to_bytes(k=k, v=v, use_serialize=use_serialize)
-        operand = self.kv_stub.putIfAbsent(kv_pb2.Operand(key=k, value=v), metadata=_get_meta(_table))
+        operand = self.kv_stub.putIfAbsent(kv_pb2.Operand(key=k, value=v), metadata=_get_meta(_table, self.session_id))
         return self._deserialize_operand(operand, use_serialize=use_serialize)
 
     def action(_table, host, port, chunked_iter, use_serialize):
@@ -506,7 +526,7 @@ class _EggRoll(object):
         _EggRoll.get_instance().proc_stub = processor_pb2_grpc.ProcessServiceStub(_EggRoll.get_instance().channel)
 
         operand = _EggRoll.get_instance().__generate_operand(chunked_iter, use_serialize)
-        _EggRoll.get_instance().kv_stub.putAll(operand, metadata=_get_meta(_table))
+        _EggRoll.get_instance().kv_stub.putAll(operand, metadata=_get_meta(_table, self.session_id))
 
     def put_all(self, _table, data: Iterable, use_serialize=True, chunk_size=100000, skip_chunk=0, include_key=True, single_process=False):
         global gc_tag
@@ -530,7 +550,7 @@ class _EggRoll(object):
                 if skipped_chunk < skip_chunk:
                     skipped_chunk += 1
                 else:
-                    self.kv_stub.putAll(self.__generate_operand(chunked_iter, use_serialize=use_serialize), metadata=_get_meta(_table))
+                    self.kv_stub.putAll(self.__generate_operand(chunked_iter, use_serialize=use_serialize), metadata=_get_meta(_table, self.session_id))
         else:
             with ProcessPoolExecutor(process_pool_size) as executor:
                 if isinstance(kvs, Sequence):      # Sequence
@@ -563,25 +583,25 @@ class _EggRoll(object):
        
     def delete(self, _table, k, use_serialize=True):
         k = self.kv_to_bytes(k=k, use_serialize=use_serialize)
-        operand = self.kv_stub.delOne(kv_pb2.Operand(key=k), metadata=_get_meta(_table))
+        operand = self.kv_stub.delOne(kv_pb2.Operand(key=k), metadata=_get_meta(_table, self.session_id))
         return self._deserialize_operand(operand, use_serialize=use_serialize)
 
     def get(self, _table, k, use_serialize=True):
         k = self.kv_to_bytes(k=k, use_serialize=use_serialize)
-        operand = self.kv_stub.get(kv_pb2.Operand(key=k), metadata=_get_meta(_table))
+        operand = self.kv_stub.get(kv_pb2.Operand(key=k), metadata=_get_meta(_table, self.session_id))
         return self._deserialize_operand(operand, use_serialize=use_serialize)
 
     def iterate(self, _table, _range):
-        return self.kv_stub.iterate(_range, metadata=_get_meta(_table))
+        return self.kv_stub.iterate(_range, metadata=_get_meta(_table, self.session_id))
 
     def destroy(self, _table):
-        self.kv_stub.destroy(empty, metadata=_get_meta(_table))
+        self.kv_stub.destroy(empty, metadata=_get_meta(_table, self.session_id))
 
     def destroy_all(self, _table):
-        self.kv_stub.destroyAll(empty, metadata=_get_meta(_table))
+        self.kv_stub.destroyAll(empty, metadata=_get_meta(_table, self.session_id))
 
     def count(self, _table):
-        return self.kv_stub.count(empty, metadata=_get_meta(_table)).value
+        return self.kv_stub.count(empty, metadata=_get_meta(_table, self.session_id)).value
 
     '''
     Computing apis
@@ -668,7 +688,7 @@ class _EggRoll(object):
     def __do_unary_process(self, table: _DTable, user_func, stub_func):
         process = self.__create_unary_process(table=table, func=user_func)
 
-        return stub_func(process)
+        return stub_func(process, metadata=(_get_call_seq(self.session_id),))
 
     def __do_unary_process_and_create_table(self, table: _DTable, user_func, stub_func):
         resp = self.__do_unary_process(table=table, user_func=user_func, stub_func=stub_func)
@@ -688,7 +708,7 @@ class _EggRoll(object):
     def __do_binary_process(self, left: _DTable, right: _DTable, user_func, stub_func):
         process = self.__create_binary_process(left=left, right=right, func=user_func, session=self.eggroll_session.to_protobuf())
 
-        return stub_func(process)
+        return stub_func(process, metadata=(_get_call_seq(self.session_id),))
 
     def __do_binary_process_and_create_table(self, left: _DTable, right: _DTable, user_func, stub_func):
         resp = self.__do_binary_process(left=left, right=right, user_func=user_func, stub_func=stub_func)

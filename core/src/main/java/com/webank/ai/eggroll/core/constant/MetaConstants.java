@@ -24,6 +24,7 @@ import io.grpc.Context;
 import io.grpc.Metadata;
 
 import java.util.Map;
+import org.apache.commons.lang3.StringUtils;
 
 public class MetaConstants {
 
@@ -31,18 +32,21 @@ public class MetaConstants {
     public static final CompositeHeaderKey TABLE_NAME = CompositeHeaderKey.from("TABLE_NAME");
     public static final CompositeHeaderKey NAME_SPACE = CompositeHeaderKey.from("NAME_SPACE");
     public static final CompositeHeaderKey FRAGMENT = CompositeHeaderKey.from("FRAGMENT");
+    public static final CompositeHeaderKey CALL_SEQ = CompositeHeaderKey.from("CALL_SEQ");
 
-    private static final CompositeHeaderKey[] STORE_META = {
+
+    private static final CompositeHeaderKey[] META = {
             STORE_TYPE,
             TABLE_NAME,
             NAME_SPACE,
-            FRAGMENT
+            FRAGMENT,
+            CALL_SEQ
     };
 
 
     public static Context updateContext(Metadata metadata, Context context) {
         Context rtn = context;
-        for (CompositeHeaderKey compositeHeaderKey : STORE_META) {
+        for (CompositeHeaderKey compositeHeaderKey : META) {
             rtn = rtn.withValue(compositeHeaderKey.asContextKey(), metadata.get(compositeHeaderKey.asMetaKey()));
         }
         return rtn;
@@ -74,6 +78,22 @@ public class MetaConstants {
         return result;
     }
 
+    public static Metadata createMetadataFromStoreInfoAndCallSeq(StoreInfo storeInfo, String callSeq) {
+        Metadata result = null;
+        if (storeInfo != null) {
+            result = new Metadata();
+            result.put(STORE_TYPE.asMetaKey(), storeInfo.getType());
+            result.put(NAME_SPACE.asMetaKey(), storeInfo.getNameSpace());
+            result.put(TABLE_NAME.asMetaKey(), storeInfo.getTableName());
+            if (storeInfo.getFragment() != null) {
+                result.put(FRAGMENT.asMetaKey(), storeInfo.getFragment().toString());
+            }
+            if (!StringUtils.isBlank(callSeq)) {
+                result.put(CALL_SEQ.asMetaKey(), callSeq);
+            }
+        }
+        return result;
+    }
 
     public static class CompositeHeaderKey {
 

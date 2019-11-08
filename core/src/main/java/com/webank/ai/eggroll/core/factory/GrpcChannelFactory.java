@@ -162,6 +162,7 @@ public class GrpcChannelFactory {
                     result.isShutdown(), result.isTerminated(), state.name());*/
 
             if (result.isShutdown() || result.isTerminated()) {
+                result.shutdown();
                 insecureChannelCache.invalidate(result);
                 result = insecureChannelCache.get(endpoint);
             }
