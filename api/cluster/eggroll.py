@@ -223,8 +223,12 @@ class _DTable(object):
         del(buffer_split[-1])
 
         for line in buffer_split:
-            key, value = func(line)
-            chunked_iter.append((key, value))
+            if include_key is True:
+                key, value = func(line)
+                chunked_iter.append((key, value))
+            else:
+                value = func(line)
+                chunked_iter.append(value)
 
         if len(chunked_iter) == 0:
             fp.close()
