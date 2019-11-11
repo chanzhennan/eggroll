@@ -261,7 +261,7 @@ class _DTable(object):
             fp.seek(-1, 1) 
         fp.close()
 
-    def put_file(self, file_path, func, use_serialize=True, chunk_size=1000000, include_key=True):
+    def put_file(self, file_path, func, use_serialize=True, chunk_size=1000000, include_key=True, has_head=False):
         thread_pool_size = cpu_count() + 8
         task_status_list = []
 
@@ -269,6 +269,13 @@ class _DTable(object):
             begin_offset = 0
             end_offset = 0
             file_size = os.path.getsize(file_path)
+
+            if has_head is True:
+                fp = open(file_path, 'r')
+                fp.readline()
+                begin_offset = fp.tell()
+                fp.close()
+
             while end_offset < file_size:
                 for i in range(thread_pool_size):
                     end_offset = file_size if (begin_offset + chunk_size) > file_size else self.get_offset(file_path, begin_offset, chunk_size)
