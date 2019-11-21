@@ -29,40 +29,74 @@ class TestRollPair(unittest.TestCase):
           'cluster_manager_port': 4670,
           'roll_pair_service_host': 'localhost',
           'roll_pair_service_port': 20000}
+
+  storage_opts = {'cluster_manager_host': 'localhost',
+          'cluster_manager_port': 4670,
+          'roll_pair_service_host': 'localhost',
+          'roll_pair_service_port': 20001}
+  def test_get(self):
+    store = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                 name="name"))
+    rp = RollPair(er_store=store, opts=TestRollPair.storage_opts)
+    res = rp.get(b'1')
+    print(res)
+
+  def test_put(self):
+    store = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                 name="name"))
+    rp = RollPair(er_store=store, opts=TestRollPair.storage_opts)
+    res = rp.put(b'key', b'value')
+    print(res)
+
   def test_map_values(self):
-    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LEVELDB, namespace='namespace',
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
                                    name='name'))
     rp = RollPair(store, opts=TestRollPair.opts)
 
-    res = rp.map_values(lambda v : v + b'~2', output=ErStore(store_locator = ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LEVELDB, namespace='namespace', name='testMapValues')))
+    res = rp.map_values(lambda v : v + b'~2', output=ErStore(store_locator = ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace', name='testMapValues')))
 
     print('res: ', res)
 
   def test_reduce(self):
-    store_locator = ErStoreLocator(store_type="levelDb", namespace="ns",
-                                   name='name')
-
-    rp = RollPair(store_locator)
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
     res = rp.reduce(lambda x, y : x + y)
     print('res: ', res)
 
-  def test_join(self):
-    left_locator = ErStoreLocator(store_type="levelDb", namespace="ns",
-                                   name='name')
-    right_locator = ErStoreLocator(store_type="levelDb", namespace="ns",
-                                   name='test')
+  def test_map_partitions(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
 
-    left = RollPair(left_locator)
-    right = RollPair(right_locator)
-    res = left.join(right, lambda x, y : x + b' joins ' + y)
+    def func(iter):
+      ret = []
+      for k, v in iter:
+        k = int(k)
+        v = int(v)
+        ret.append((bytes(f"{k}_{v}_0", encoding='utf8'), bytes(str(v ** 2), encoding='utf8')))
+        ret.append((bytes(f"{k}_{v}_1", encoding='utf8'), bytes(str(v ** 3), encoding='utf8')))
+      return ret
+    res = rp.map_partitions(func)
+    print('res:', res)
+
+  def test_join(self):
+    left_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                   name='name'))
+    right_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                   name='test'))
+
+    left = RollPair(left_locator, opts=TestRollPair.opts)
+    right = RollPair(right_locator, opts=TestRollPair.opts)
+    res = left.join(right, lambda x, y : x + b' joins ' + y,
+                    output=ErStore(store_locator = ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace', name='testJoin')))
     print('res: ', res)
 
 
   def test_map(self):
-    store_locator = ErStoreLocator(store_type="levelDb", namespace="ns",
-                                  name='name')
-
-    rp = RollPair(store_locator)
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
 
     res = rp.map(lambda k, v: (b'k_' + k, b'v_' + v), lambda k : k[-1] % 4)
 

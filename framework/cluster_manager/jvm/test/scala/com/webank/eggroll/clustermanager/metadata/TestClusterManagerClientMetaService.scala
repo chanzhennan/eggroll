@@ -149,7 +149,7 @@ class TestClusterManagerClientMetaService {
   @Test
   def testGetOrCreateStore(): Unit = {
     val input = ErStoreLocator(
-      storeType = StoreTypes.ROLLPAIR_LEVELDB,
+      storeType = StoreTypes.ROLLPAIR_LMDB,
       namespace = "namespace",
       name = "test",
       totalPartitions = 4,

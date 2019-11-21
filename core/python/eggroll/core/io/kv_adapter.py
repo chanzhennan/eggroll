@@ -145,7 +145,7 @@ class LmdbWriteBatch(SortedKvWriteBatch):
     pass
 
 
-class LmdbAdapter(SortedKvAdapter):
+class LmdbSortedKvAdapter(SortedKvAdapter):
 
   def get(self, key):
     return self.cursor.get(key)

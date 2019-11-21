@@ -12,13 +12,17 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+from collections import Iterable
 
 import grpc
 from concurrent import futures
+
+import numpy as np
+
 from eggroll.core.command.command_router import CommandRouter
 from eggroll.core.command.command_service import CommandServicer
 from eggroll.core.datastructure.broker import FifoBroker
-from eggroll.core.io.kv_adapter import RocksdbSortedKvAdapter
+from eggroll.core.io.kv_adapter import RocksdbSortedKvAdapter, LmdbSortedKvAdapter
 from eggroll.core.io.io_utils import get_db_path
 from eggroll.core.meta_model import ErTask, ErPartition
 from eggroll.core.proto import command_pb2_grpc, transfer_pb2_grpc
@@ -28,25 +32,82 @@ from eggroll.core.transfer.transfer_service import GrpcTransferServicer, \
 from eggroll.roll_pair.shuffler import DefaultShuffler
 from grpc._cython import cygrpc
 
+def generator(iterator):
+  for k, v in iterator:
+    print("yield ({}, {})".format(k, v))
+    yield k, v
+
 class EggPair(object):
+  uri_prefix = 'v1/egg-pair'
+  GET = "get"
+  PUT = "put"
+
+  def get_unary_input_adapter(self, task_info: ErTask):
+    input_partition = task_info._inputs[0]
+    print("input_adapter: ", input_partition, "path: ",
+          get_db_path(input_partition))
+    input_adapter = None
+    if task_info._inputs[0]._store_locator._store_type == "rollpair.lmdb":
+      input_adapter = LmdbSortedKvAdapter(
+        options={'path': get_db_path(partition=input_partition)})
+    elif task_info._inputs[0]._store_locator._store_type == "rollpair.leveldb":
+      input_adapter = RocksdbSortedKvAdapter(
+        options={'path': get_db_path(partition=input_partition)})
+    return input_adapter
+
+  def get_binary_input_adapter(self, task_info: ErTask):
+    left_partition = task_info._inputs[0]
+    right_partition = task_info._inputs[1]
+    print("left partition: ", left_partition, "path: ",
+          get_db_path(left_partition))
+    print("right partition: ", right_partition, "path: ",
+          get_db_path(right_partition))
+    left_adapter = None
+    right_adapter = None
+    if task_info._inputs[0]._store_locator._store_type == "rollpair.lmdb":
+      left_adapter = LmdbSortedKvAdapter(
+        options={'path': get_db_path(left_partition)})
+      right_adapter = LmdbSortedKvAdapter(
+        options={'path': get_db_path(right_partition)})
+    elif task_info._inputs[0]._store_locator._store_type == "rollpair.leveldb":
+      left_adapter = RocksdbSortedKvAdapter(
+        options={'path': get_db_path(left_partition)})
+      right_adapter = RocksdbSortedKvAdapter(
+        options={'path': get_db_path(right_partition)})
+
+    return left_adapter, right_adapter
+
+  def get_unary_output_adapter(self, task_info: ErTask):
+    output_partition = task_info._inputs[0]
+    print("output_partition: ", output_partition, "path: ",
+          get_db_path(output_partition))
+    output_adapter = None
+    if task_info._inputs[0]._store_locator._store_type == "rollpair.lmdb":
+      output_adapter = LmdbSortedKvAdapter(
+        options={'path': get_db_path(partition=output_partition)})
+    elif task_info._inputs[0]._store_locator._store_type == "rollpair.leveldb":
+      output_adapter = RocksdbSortedKvAdapter(
+        options={'path': get_db_path(partition=output_partition)})
+    return output_adapter
+
   def run_task(self, task: ErTask):
     functors = task._job._functors
     result = task
 
+    if task._name == 'get':
+      print("egg_pair get call")
+      input_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.get(b'test_get_key')
+
+    if task._name == 'put':
+      print("egg_pair put call")
+      input_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.put(b'test_put_key', b'test_put_val')
+
     if task._name == 'mapValues':
       f = cloudpickle.loads(functors[0]._body)
-      input_partition = task._inputs[0]
-      output_partition = task._outputs[0]
-
-      print("input partition: ", input_partition, "path: ",
-            get_db_path(input_partition))
-      print("output partition: ", output_partition, "path: ",
-            get_db_path(output_partition))
-      input_adapter = RocksdbSortedKvAdapter(
-        options={'path': get_db_path(input_partition)})
-      output_adapter = RocksdbSortedKvAdapter(
-        options={'path': get_db_path(output_partition)})
-
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
       input_iterator = input_adapter.iteritems()
       output_writebatch = output_adapter.new_batch()
 
@@ -56,40 +117,31 @@ class EggPair(object):
       output_writebatch.close()
       input_adapter.close()
       output_adapter.close()
+
     elif task._name == 'map':
       f = cloudpickle.loads(functors[0]._body)
       p = cloudpickle.loads(functors[1]._body)
 
-      input_partition = task._inputs[0]
+      input_adapter = self.get_unary_input_adapter(task_info=task)
       output_partition = task._outputs[0]
-
-      print("input partition: ", input_partition, "path: ",
-            get_db_path(input_partition))
       print("output partition: ", output_partition, "path: ",
             get_db_path(output_partition))
-      input_adapter = RocksdbSortedKvAdapter(
-          options={'path': get_db_path(input_partition)})
       output_store = task._job._outputs[0]
 
       shuffle_broker = FifoBroker()
-
       for k_bytes, v_bytes in input_adapter.iteritems():
         shuffle_broker.put(f(k_bytes, v_bytes))
       input_adapter.close()
       shuffle_broker.signal_write_finish()
-
       shuffler = DefaultShuffler(task._job._id, shuffle_broker, output_store, output_partition, p)
       shuffler.start()
-
       shuffle_finished = shuffler.wait_until_finished(600)
-
       print('map finished')
+
     elif task._name == 'reduce':
       f = cloudpickle.loads(functors[0]._body)
 
-      input_partition = task._inputs[0]
-      input_adapter = RocksdbSortedKvAdapter(
-        options={'path': get_db_path(input_partition)})
+      input_adapter = self.get_unary_input_adapter(task_info=task)
       seq_op_result = None
 
       for k_bytes, v_bytes in input_adapter.iteritems():
@@ -98,7 +150,7 @@ class EggPair(object):
         else:
           seq_op_result = v_bytes
 
-      partition_id = input_partition._id
+      partition_id = task._inputs[0]._id
       transfer_tag = task._job._name
 
       if "0" == partition_id:
@@ -112,10 +164,7 @@ class EggPair(object):
 
           comb_op_result = f(comb_op_result, other_seq_op_result)
 
-        output_partition = task._outputs[0]
-        output_adapter = RocksdbSortedKvAdapter(
-          options={'path': get_db_path(output_partition)})
-
+        output_adapter = self.get_unary_output_adapter(task_info=task)
         output_writebatch = output_adapter.new_batch()
         output_writebatch.put('result'.encode(), comb_op_result)
 
@@ -127,26 +176,159 @@ class EggPair(object):
                              server_node=task._outputs[0]._node)
 
       input_adapter.close()
+
+    elif task._name == 'mapPartitions':
+      f = cloudpickle.loads(functors[0]._body)
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      value = f(generator(input_iterator))
+      if input_iterator.last():
+        print("value of mapPartitions2:{}".format(value))
+        if isinstance(value, Iterable):
+          for k1, v1 in value:
+            output_writebatch.put(k1, v1)
+        else:
+          key = input_iterator.key()
+          output_writebatch.put(key, value)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'collapsePartitions':
+      f = cloudpickle.loads(functors[0]._body)
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      value = f(generator(input_iterator))
+      if input_iterator.last():
+        key = input_iterator.key()
+        output_writebatch.put(key, value)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'flatMap':
+      f = cloudpickle.loads(functors[0]._body)
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      for k1, v1 in input_iterator:
+        for k2, v2 in f(k1, v1):
+          output_writebatch.put(k2, v2)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'glom':
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      k_tmp = None
+      v_list = []
+      for k, v in input_iterator:
+        v_list.append((k, v))
+        k_tmp = k
+      if k_tmp is not None:
+        output_writebatch.put(k_tmp, v_list)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'sample':
+      fraction = cloudpickle.loads(functors[0]._body)
+      seed = cloudpickle.loads(functors[1]._body)
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      input_iterator.first()
+      random_state = np.random.RandomState(seed)
+      for k, v in input_iterator:
+        if random_state.rand() < fraction:
+          output_writebatch.put(k, v)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'filter':
+      f = cloudpickle.loads(functors[0]._body)
+      input_adapter = self.get_unary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      input_iterator = input_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      for k ,v in input_iterator:
+        if f(k, v):
+          output_writebatch.put(k, v)
+
+      output_writebatch.close()
+      output_adapter.close()
+      input_adapter.close()
+
+    elif task._name == 'subtractByKey':
+      left_adapter, right_adapter = self.get_binary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      left_iterator = left_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      for k_left, v_left in left_iterator:
+        v_right = right_adapter.get(k_left)
+        if v_right is None:
+          output_writebatch.put(k_left, v_left)
+
+      output_writebatch.close()
+      output_adapter.close()
+      left_adapter.close()
+      right_adapter.close()
+
+    elif task._name == 'union':
+      f = cloudpickle.loads(functors[0]._body)
+      left_adapter, right_adapter = self.get_binary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
+      left_iterator = left_adapter.iteritems()
+      right_iterator = right_adapter.iteritems()
+      output_writebatch = output_adapter.new_batch()
+
+      #store the iterator that has been iterated before
+      k_list_iterated = []
+
+      for k_left, v_left in left_iterator:
+        v_right = right_adapter.get(k_left)
+        if v_right is None:
+          output_writebatch.put(k_left, v_left)
+        else:
+          k_list_iterated.append(v_left)
+          v_final = f(v_left, v_right)
+          output_writebatch.put(k_left, v_final)
+
+      for k_right, v_right in right_iterator:
+        if k_right not in k_list_iterated:
+          output_writebatch.put(k_right, v_right)
+
+      output_writebatch.close()
+      output_adapter.close()
+      left_adapter.close()
+      right_adapter.close()
+
     elif task._name == 'join':
       f = cloudpickle.loads(functors[0]._body)
-      left_partition = task._inputs[0]
-      right_partition = task._inputs[1]
-      output_partition = task._outputs[0]
-
-      print("left partition: ", left_partition, "path: ",
-            get_db_path(left_partition))
-      print("right partition: ", right_partition, "path: ",
-            get_db_path(right_partition))
-      print("output partition: ", output_partition, "path: ",
-            get_db_path(output_partition))
-
-      left_adapter = RocksdbSortedKvAdapter(
-          options={'path': get_db_path(left_partition)})
-      right_adapter = RocksdbSortedKvAdapter(
-          options={'path': get_db_path(right_partition)})
-      output_adapter = RocksdbSortedKvAdapter(
-          options={'path': get_db_path(output_partition)})
-
+      left_adapter, right_adapter = self.get_binary_input_adapter(task_info=task)
+      output_adapter = self.get_unary_output_adapter(task_info=task)
       left_iterator = left_adapter.iteritems()
       right_iterator = right_adapter.iteritems()
       output_writebatch = output_adapter.new_batch()
@@ -157,9 +339,9 @@ class EggPair(object):
           output_writebatch.put(k_bytes, f(l_v_bytes, r_v_bytes))
 
       output_writebatch.close()
+      output_adapter.close()
       left_adapter.close()
       right_adapter.close()
-      output_adapter.close()
 
     print('result: ', result)
     return result
@@ -169,6 +351,19 @@ def serve():
   port = 20001
   prefix = 'v1/egg-pair'
 
+  #storage api
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/get",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/put",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+
+  #computing api
   CommandRouter.get_instance().register(
     service_name=f"{prefix}/mapValues",
     route_to_module_name="eggroll.roll_pair.egg_pair",
@@ -189,6 +384,46 @@ def serve():
       route_to_module_name="eggroll.roll_pair.egg_pair",
       route_to_class_name="EggPair",
       route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/mapPartitions",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/collapsePartitions",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/flatMap",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/glom",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/sample",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/filter",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/subtractByKey",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
+  CommandRouter.get_instance().register(
+    service_name=f"{prefix}/union",
+    route_to_module_name="eggroll.roll_pair.egg_pair",
+    route_to_class_name="EggPair",
+    route_to_method_name="run_task")
 
   server = grpc.server(futures.ThreadPoolExecutor(max_workers=5),
                        options=[
