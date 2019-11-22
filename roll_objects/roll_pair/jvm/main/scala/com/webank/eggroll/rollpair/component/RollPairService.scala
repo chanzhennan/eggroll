@@ -155,7 +155,7 @@ class RollPairService() {
     val outputStoreWithPartitions = clusterManagerClient.getOrCreateStore(outputStoreWithPartitionProposal)
 
     val taskPlanJob = inputJob.copy(inputs = Array(inputStoreWithPartitions), outputs = Array(outputStoreWithPartitions))
-    val taskPlan = new MapTaskPlan(new CommandURI(RollPairService.eggmapPartitionsCommand), taskPlanJob)
+    val taskPlan = new MapTaskPlan(new CommandURI(RollPairService.eggMapPartitionsCommand), taskPlanJob)
 
     scheduler.addPlan(taskPlan)
 
