@@ -283,8 +283,7 @@ class TestRollPair extends Logging {
       serviceParamTypes = Array(classOf[ErJob]),
       routeToClass = classOf[RollPairService],
       routeToMethodName = RollPairService.join)
-
-    println("register mapPartitions")
+    
     logInfo("started")
     Thread.sleep(1200000)
   }
