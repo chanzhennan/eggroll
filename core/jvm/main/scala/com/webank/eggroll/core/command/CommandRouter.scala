@@ -114,7 +114,7 @@ object CommandRouter {
       serviceResultSerializers = resultSerializers.toArray,
       callBasedInstance = finalCallBasedInstance,
       routeToMethod = routeToMethod)
-
+    println("register service name: ", serviceName)
     serviceRouteTable.put(serviceName, command)
   }
 
@@ -150,6 +150,7 @@ object CommandRouter {
   }
 
   def query(serviceName: String): ErService = {
+    println("service name:", serviceName)
     serviceRouteTable(serviceName)
   }
 }

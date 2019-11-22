@@ -39,14 +39,14 @@ class TestRollPair(unittest.TestCase):
                                                  name="name"))
     rp = RollPair(er_store=store, opts=TestRollPair.storage_opts)
     res = rp.get(b'1')
-    print(res)
+    print("res: {}".format(res))
 
   def test_put(self):
     store = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
                                                  name="name"))
     rp = RollPair(er_store=store, opts=TestRollPair.storage_opts)
     res = rp.put(b'key', b'value')
-    print(res)
+    print("res: {}".format(res))
 
   def test_map_values(self):
     store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
@@ -54,15 +54,14 @@ class TestRollPair(unittest.TestCase):
     rp = RollPair(store, opts=TestRollPair.opts)
 
     res = rp.map_values(lambda v : v + b'~2', output=ErStore(store_locator = ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace', name='testMapValues')))
-
-    print('res: ', res)
+    print("res: {}".format(res))
 
   def test_reduce(self):
     store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
                                    name='name'))
     rp = RollPair(store, opts=TestRollPair.opts)
     res = rp.reduce(lambda x, y : x + y)
-    print('res: ', res)
+    print("res: {}".format(res))
 
   def test_map_partitions(self):
     store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
@@ -78,7 +77,83 @@ class TestRollPair(unittest.TestCase):
         ret.append((bytes(f"{k}_{v}_1", encoding='utf8'), bytes(str(v ** 3), encoding='utf8')))
       return ret
     res = rp.map_partitions(func)
-    print('res:', res)
+    print("res: {}".format(res))
+
+  def test_collapse_partitions(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
+
+    def f(iterator):
+      sum = ""
+      for k, v in iterator:
+        sum += v
+      return sum
+    res = rp.collapse_partitions(f)
+    print("res: {}".format(res))
+
+  def test_filter(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
+    res = rp.filter(lambda k, v: int(k) % 2 != 0)
+    print("res: {}".format(res))
+
+  def test_glom(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
+
+    res = rp.glom()
+    print("res: {}".format(res))
+
+  def test_flatMap(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
+    import random
+    def foo(k, v):
+      k = int(k)
+      v = int(v)
+      result = []
+      r = random.randint(10000, 99999)
+      for i in range(0, k):
+        result.append((k + r + i, v + r + i))
+      return result
+    res = rp.flat_map(foo)
+    print("res: {}".format(res))
+
+  def test_sample(self):
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace',
+                                   name='name'))
+    rp = RollPair(store, opts=TestRollPair.opts)
+
+    res = rp.sample(0.1, 81)
+    print("res: {}".format(res))
+
+  def test_subtractByKey(self):
+    left_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                        name='name'))
+    right_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                         name='test'))
+
+    left = RollPair(left_locator, opts=TestRollPair.opts)
+    right = RollPair(right_locator, opts=TestRollPair.opts)
+
+    res = left.subtract_by_key(right)
+    print("res: {}".format(res))
+
+  def test_union(self):
+    left_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                        name='name'))
+    right_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                                         name='test'))
+
+    left = RollPair(left_locator, opts=TestRollPair.opts)
+    right = RollPair(right_locator, opts=TestRollPair.opts)
+
+    res = left.union(right, lambda v1, v2: v1 + v2)
+    print("res: {}".format(res))
 
   def test_join(self):
     left_locator = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
@@ -90,7 +165,7 @@ class TestRollPair(unittest.TestCase):
     right = RollPair(right_locator, opts=TestRollPair.opts)
     res = left.join(right, lambda x, y : x + b' joins ' + y,
                     output=ErStore(store_locator = ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace='namespace', name='testJoin')))
-    print('res: ', res)
+    print("res: {}".format(res))
 
 
   def test_map(self):

@@ -173,7 +173,7 @@ class EggPair(object):
       else:
         transfer_client = TransferClient()
         transfer_client.send(data=seq_op_result, tag=transfer_tag,
-                             server_node=task._outputs[0]._node)
+                             server_node=task._outputs[0]._processor)
 
       input_adapter.close()
 
