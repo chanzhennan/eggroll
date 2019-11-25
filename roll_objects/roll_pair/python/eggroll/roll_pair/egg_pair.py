@@ -27,20 +27,24 @@ from eggroll.core.io.io_utils import get_db_path
 from eggroll.core.meta_model import ErTask, ErPartition
 from eggroll.core.proto import command_pb2_grpc, transfer_pb2_grpc
 from eggroll.core.serdes import cloudpickle
+from eggroll.core.serdes import eggroll_serdes
 from eggroll.core.transfer.transfer_service import GrpcTransferServicer, \
   TransferClient
 from eggroll.roll_pair.shuffler import DefaultShuffler
 from grpc._cython import cygrpc
 
-def generator(iterator):
+def generator(serde, iterator):
   for k, v in iterator:
-    print("yield ({}, {})".format(k, v))
-    yield k, v
+    print("yield ({}, {})".format(serde.deserialize(k), serde.deserialize(v)))
+    yield serde.deserialize(k), serde.deserialize(v)
 
 class EggPair(object):
   uri_prefix = 'v1/egg-pair'
   GET = "get"
   PUT = "put"
+
+  def __init__(self):
+    self.serde = self._create_serde()
 
   def get_unary_input_adapter(self, task_info: ErTask):
     input_partition = task_info._inputs[0]
@@ -90,6 +94,9 @@ class EggPair(object):
         options={'path': get_db_path(partition=output_partition)})
     return output_adapter
 
+  def _create_serde(self):
+    return eggroll_serdes.get_serdes()
+
   def run_task(self, task: ErTask):
     functors = task._job._functors
     result = task
@@ -112,7 +119,8 @@ class EggPair(object):
       output_writebatch = output_adapter.new_batch()
 
       for k_bytes, v_bytes in input_iterator:
-        output_writebatch.put(k_bytes, f(v_bytes))
+        v = self.serde.deserialize(v_bytes)
+        output_writebatch.put(k_bytes, self.serde.serialize(f(v)))
 
       output_writebatch.close()
       input_adapter.close()
@@ -146,9 +154,9 @@ class EggPair(object):
 
       for k_bytes, v_bytes in input_adapter.iteritems():
         if seq_op_result:
-          seq_op_result = f(seq_op_result, v_bytes)
+          seq_op_result = f(seq_op_result, self.serde.deserialize(v_bytes))
         else:
-          seq_op_result = v_bytes
+          seq_op_result = self.serde.deserialize(v_bytes)
 
       partition_id = task._inputs[0]._id
       transfer_tag = task._job._name
@@ -166,7 +174,7 @@ class EggPair(object):
 
         output_adapter = self.get_unary_output_adapter(task_info=task)
         output_writebatch = output_adapter.new_batch()
-        output_writebatch.put('result'.encode(), comb_op_result)
+        output_writebatch.put('result'.encode(), self.serde.serialize(comb_op_result))
 
         output_writebatch.close()
         output_adapter.close()
@@ -184,15 +192,15 @@ class EggPair(object):
       input_iterator = input_adapter.iteritems()
       output_writebatch = output_adapter.new_batch()
 
-      value = f(generator(input_iterator))
+      value = f(generator(self.serde, input_iterator))
       if input_iterator.last():
         print("value of mapPartitions2:{}".format(value))
         if isinstance(value, Iterable):
           for k1, v1 in value:
-            output_writebatch.put(k1, v1)
+            output_writebatch.put(self.serde.serialize(k1), self.serde.serialize(v1))
         else:
           key = input_iterator.key()
-          output_writebatch.put(key, value)
+          output_writebatch.put(key, self.serde.serialize(value))
 
       output_writebatch.close()
       output_adapter.close()
@@ -205,10 +213,10 @@ class EggPair(object):
       input_iterator = input_adapter.iteritems()
       output_writebatch = output_adapter.new_batch()
 
-      value = f(generator(input_iterator))
+      value = f(generator(self.serde, input_iterator))
       if input_iterator.last():
         key = input_iterator.key()
-        output_writebatch.put(key, value)
+        output_writebatch.put(key, self.serde.serialize(value))
 
       output_writebatch.close()
       output_adapter.close()
@@ -222,8 +230,8 @@ class EggPair(object):
       output_writebatch = output_adapter.new_batch()
 
       for k1, v1 in input_iterator:
-        for k2, v2 in f(k1, v1):
-          output_writebatch.put(k2, v2)
+        for k2, v2 in f(self.serde.deserialize(k1), self.serde.deserialize(v1)):
+          output_writebatch.put(self.serde.serialize(k2), self.serde.serialize(v2))
 
       output_writebatch.close()
       output_adapter.close()
@@ -238,10 +246,10 @@ class EggPair(object):
       k_tmp = None
       v_list = []
       for k, v in input_iterator:
-        v_list.append((k, v))
+        v_list.append((self.serde.deserialize(k), self.serde.deserialize(v)))
         k_tmp = k
       if k_tmp is not None:
-        output_writebatch.put(k_tmp, v_list)
+        output_writebatch.put(k_tmp, self.serde.serialize(v_list))
 
       output_writebatch.close()
       output_adapter.close()
@@ -273,7 +281,7 @@ class EggPair(object):
       output_writebatch = output_adapter.new_batch()
 
       for k ,v in input_iterator:
-        if f(k, v):
+        if f(self.serde.deserialize(k), self.serde.deserialize(v)):
           output_writebatch.put(k, v)
 
       output_writebatch.close()
@@ -312,12 +320,12 @@ class EggPair(object):
         if v_right is None:
           output_writebatch.put(k_left, v_left)
         else:
-          k_list_iterated.append(v_left)
+          k_list_iterated.append(self.serde.deserialize(v_left))
           v_final = f(v_left, v_right)
           output_writebatch.put(k_left, v_final)
 
       for k_right, v_right in right_iterator:
-        if k_right not in k_list_iterated:
+        if self.serde.deserialize(k_right) not in k_list_iterated:
           output_writebatch.put(k_right, v_right)
 
       output_writebatch.close()
@@ -336,7 +344,9 @@ class EggPair(object):
       for k_bytes, l_v_bytes in left_iterator:
         r_v_bytes = right_adapter.get(k_bytes)
         if r_v_bytes:
-          output_writebatch.put(k_bytes, f(l_v_bytes, r_v_bytes))
+          output_writebatch.put(k_bytes,
+                                self.serde.serialize(f(self.serde.deserialize(l_v_bytes),
+                                                       self.serde.deserialize(r_v_bytes))))
 
       output_writebatch.close()
       output_adapter.close()

@@ -21,6 +21,7 @@ from eggroll.core.command.command_client import CommandClient
 from eggroll.cluster_manager.cluster_manager_client import ClusterManagerClient
 from eggroll.core.grpc.factory import GrpcChannelFactory
 from eggroll.core.constants import StoreTypes, SerdesTypes, PartitionerTypes
+from eggroll.core.serdes import eggroll_serdes
 from eggroll.roll_pair.egg_pair import EggPair
 
 class RollPair(object):
@@ -39,6 +40,7 @@ class RollPair(object):
   FILTER = "filter"
   SUBTRACTBYKEY = "subtractByKey"
   UNION = "union"
+  value_serdes = eggroll_serdes.get_serdes()
 
   def __init__(self, er_store: ErStore, opts = {'cluster_manager_host': 'localhost', 'cluster_manager_port': 4670}):
     _grpc_channel_factory = GrpcChannelFactory()
