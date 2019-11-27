@@ -40,8 +40,8 @@ def generator(serde, iterator):
 
 class EggPair(object):
   uri_prefix = 'v1/egg-pair'
-  GET = "get"
-  PUT = "put"
+  GET = 'get'
+  PUT = 'put'
 
   def __init__(self):
     self.serde = self._create_serde()

@@ -35,10 +35,10 @@ class TestRollPair(unittest.TestCase):
           'roll_pair_service_host': 'localhost',
           'roll_pair_service_port': 20001}
   def test_get(self):
-    store = ErStore(store_locator=ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
-                                                 name="name"))
-    rp = RollPair(er_store=store, opts=TestRollPair.storage_opts)
-    res = rp.get(b'1')
+    store = ErStore(ErStoreLocator(store_type=StoreTypes.ROLLPAIR_LMDB, namespace="namespace",
+                                   name="name"))
+    rp = RollPair(store, opts=TestRollPair.storage_opts)
+    res = rp.get(bytes('1', encoding='utf-8'))
     print("res: {}".format(res))
 
   def test_put(self):
