@@ -230,11 +230,8 @@ class RocksdbWriteBatch(SortedKvWriteBatch):
         self.adapter = adapter
         self.key = None
         self.value = None
-        self.serde = None
 
     def put(self, k, v):
-        from eggroll.api.utils import eggroll_serdes  
-        self.serde = eggroll_serdes.get_serdes()
         self.key = k
         self.value = v
         self.batch.put(k, v)
