@@ -14,4 +14,31 @@
 #  limitations under the License.
 #
 
+from api import rollsite
+
+if __name__ == '__main__':
+    #ggroll.init("atest")
+    rollsite.init("atest", "roll_site/test/role_conf.json", "roll_site/test/server_conf.json")
+    _tag = "Hello"
+    a = _tag
+
+
+    #content = f.read(10000)
+    #print(content)
+    '''
+    while True:
+        print("push!!!")
+        content = f.read(10000)
+        if not content:
+            break
+        #print(content)
+        rollsite.push(content, "model_A", tag="{}".format(_tag))
+    '''
+
+    fp = open("testA.model", 'r')
+    rollsite.push(fp, "model_A", tag="{}".format(_tag))
+    fp.close()
+
+
+
 
