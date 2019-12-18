@@ -19,6 +19,8 @@
 package com.webank.eggroll.core.constant
 
 object StringConstants {
+  val PROTOBUF = "PROTOBUF"
+
   val SLASH = "/"
 
   val GRPC_PARSE_FROM = "parseFrom"
@@ -30,6 +32,7 @@ object StringConstants {
 
   val DOT = "."
   val COLON = ":"
+  val SEMICOLON = ";"
   val DASH = "-"
   val UNDERLINE = "_"
   val DOUBLE_UNDERLINES = "__"
@@ -71,14 +74,28 @@ object StringConstants {
   val LF = "\n"
   val LFLF = "\n\n"
 
-  val TRANSFER_END = "__transfer_end"
+
 
   val PATH = "path"
   val TYPE = "type"
   val SIZE = "size"
 
+  val ROLL_PAIR = "rollpair"
+  val ROLL_FRAME = "rollframe"
+  val LMDB = "lmdb"
+  val LEVELDB = "leveldb"
   val FILE = "file"
   val CACHE = "cache"
   val QUEUE = "queue"
   val TOTAL = "total"
+
+  val LOCALHOST = "localhost"
+
+  val STORE_TYPE = "storeType"
+  val NAMESPACE = "namespace"
+  val NAME = "name"
+  val TOTAL_PARTITIONS = "totalPartitions"
+  val PARTITIONER = "partitioner"
+  val SERDES = "serdes"
+
 }

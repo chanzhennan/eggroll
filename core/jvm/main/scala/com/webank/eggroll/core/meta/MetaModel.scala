@@ -18,29 +18,37 @@
 
 package com.webank.eggroll.core.meta
 
-import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 
 import com.google.protobuf.{ByteString, Message => PbMessage}
 import com.webank.eggroll.core.constant.StringConstants
-import com.webank.eggroll.core.datastructure.RpcMessage
-import com.webank.eggroll.core.meta.NetworkingModelPbSerdes._
-import com.webank.eggroll.core.serdes.{PbMessageDeserializer, PbMessageSerializer}
+import com.webank.eggroll.core.datastructure.{RollContext, RpcMessage}
+import com.webank.eggroll.core.meta.NetworkingModelPbMessageSerdes._
+import com.webank.eggroll.core.serdes.{BaseSerializable, PbMessageDeserializer, PbMessageSerializer}
+import com.webank.eggroll.core.util.TimeUtils
 import org.apache.commons.lang3.StringUtils
 
 import scala.collection.JavaConverters._
 
-case class ErFunctor(name: String = StringConstants.EMPTY, serdes: String = StringConstants.EMPTY, body: Array[Byte]) extends RpcMessage
+trait MetaRpcMessage extends RpcMessage {
+  override def rpcMessageType(): String = "Meta"
+}
 
-case class ErPair(key: Array[Byte], value: Array[Byte]) extends RpcMessage
+case class ErFunctor(name: String = StringConstants.EMPTY,
+                     serdes: String = StringConstants.EMPTY,
+                     body: Array[Byte]) extends RpcMessage
 
-case class ErPairBatch(pairs: List[ErPair]) extends RpcMessage
+case class ErPair(key: Array[Byte], value: Array[Byte]) extends MetaRpcMessage
+
+case class ErPairBatch(pairs: Array[ErPair]) extends MetaRpcMessage
 
 case class ErStoreLocator(storeType: String,
                           namespace: String,
                           name: String,
                           path: String = StringConstants.EMPTY,
+                          totalPartitions: Int = 0,
                           partitioner: String = StringConstants.EMPTY,
-                          serdes: String = StringConstants.EMPTY) extends RpcMessage {
+                          serdes: String = StringConstants.EMPTY) extends MetaRpcMessage {
   def toPath(delim: String = StringConstants.SLASH): String = {
     if (!StringUtils.isBlank(path)) {
       path
@@ -50,15 +58,22 @@ case class ErStoreLocator(storeType: String,
   }
 
   def fork(postfix: String = StringConstants.EMPTY, delimiter: String = StringConstants.UNDERLINE): ErStoreLocator = {
-    this.copy(name = if (StringUtils.isBlank(postfix)) System.nanoTime().toString else postfix)
+    val delimiterPos = StringUtils.lastIndexOf(this.name, delimiter)
+
+    val newPostfix = if (StringUtils.isBlank(postfix)) TimeUtils.getNowMs() else postfix
+    val newName =
+      if (delimiterPos > 0) s"${StringUtils.substring(this.name, 0, delimiterPos)}${delimiter}${newPostfix}"
+      else s"${name}${delimiter}${newPostfix}"
+
+    this.copy(name = newName)
   }
 }
 
-case class ErPartition(id: String, storeLocator: ErStoreLocator, node: ErServerNode) extends RpcMessage {
-  def toPath(delim: String = StringConstants.SLASH): String = String.join(delim, storeLocator.toPath(delim = delim), id)
+case class ErPartition(id: Int, storeLocator: ErStoreLocator, processor: ErProcessor) extends MetaRpcMessage {
+  def toPath(delim: String = StringConstants.SLASH): String = String.join(delim, storeLocator.toPath(delim = delim), id.toString)
 }
 
-case class ErStore(storeLocator: ErStoreLocator, partitions: List[ErPartition] = List.empty) extends RpcMessage {
+case class ErStore(storeLocator: ErStoreLocator, partitions: Array[ErPartition] = Array.empty) extends MetaRpcMessage {
   def toPath(delim: String = StringConstants.SLASH): String = storeLocator.toPath(delim = delim)
 
   def fork(storeLocator: ErStoreLocator): ErStore = {
@@ -72,33 +87,55 @@ case class ErStore(storeLocator: ErStoreLocator, partitions: List[ErPartition] =
   }
 }
 
-case class ErJob(id: String, name: String = StringConstants.EMPTY, inputs: List[ErStore], outputs: List[ErStore] = List(), functors: List[ErFunctor]) extends RpcMessage
+case class ErJob(id: String, name: String = StringConstants.EMPTY, inputs: Array[ErStore], outputs: Array[ErStore] = Array(), functors: Array[ErFunctor]) extends MetaRpcMessage
 
-case class ErTask(id: String, name: String = StringConstants.EMPTY, inputs: List[ErPartition], outputs: List[ErPartition], job: ErJob) extends RpcMessage {
+case class ErTask(id: String, name: String = StringConstants.EMPTY, inputs: Array[ErPartition], outputs: Array[ErPartition], job: ErJob) extends MetaRpcMessage {
   def getCommandEndpoint: ErEndpoint = {
     if (inputs == null || inputs.isEmpty) {
       throw new IllegalArgumentException("Partition input is empty")
     }
 
-    val node = inputs.head.node
+    val processor = inputs.head.processor
 
-    if (node == null) {
+    if (processor == null) {
       throw new IllegalArgumentException("Head node's input partition is null")
     }
 
-    node.commandEndpoint
+    processor.commandEndpoint
   }
 }
 
-/*object MetaModelUtils {
-  def forkInputs(inputs: List[ErStore],
-                 postfix: String = StringConstants.EMPTY,
-                 delimiter: String = StringConstants.UNDERLINE): List[ErStore] = {
-    inputs.map(p => p.fork(postfix = postfix, delimiter = delimiter))
+case class ErSessionMeta(id: String,
+                         name: String = StringConstants.EMPTY,
+                         status: String = StringConstants.EMPTY,
+                         options: java.util.Map[String, String] = new ConcurrentHashMap[String, String](),
+                         tag: String = StringConstants.EMPTY) extends MetaRpcMessage {
+  def toErSession(): ErSession = {
+    ErSession(id = id, name = name, status = status, sessionConf = options, tag = tag)
   }
-}*/
+}
 
-object MetaModelPbSerdes {
+case class ErSession(id: String,
+                     name: String = StringConstants.EMPTY,
+                     status: String = StringConstants.EMPTY,
+                     sessionConf: java.util.Map[String, String] = new ConcurrentHashMap[String, String](),
+                     tag: String = StringConstants.EMPTY,
+                     contexts: java.util.Map[String, RollContext] = new ConcurrentHashMap[String, RollContext](),
+                     serverCluster: ErServerCluster = null) {
+  def this(sessionMeta: ErSessionMeta, contexts: java.util.Map[String, RollContext], serverCluster: ErServerCluster) {
+    this(id = sessionMeta.id,
+      name = sessionMeta.name,
+      status = sessionMeta.status,
+      tag = sessionMeta.tag,
+      contexts = contexts,
+      serverCluster = serverCluster)
+  }
+
+  def toErSessionMeta(): ErSessionMeta =
+    ErSessionMeta(id = id, name = name, status = status, options = sessionConf, tag = tag)
+}
+
+object MetaModelPbMessageSerdes {
 
   // serializers
   implicit class ErFunctorToPbMessage(src: ErFunctor) extends PbMessageSerializer {
@@ -110,6 +147,9 @@ object MetaModelPbSerdes {
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErFunctor].toBytes()
   }
 
   implicit class ErPairToPbMessage(src: ErPair) extends PbMessageSerializer {
@@ -120,15 +160,20 @@ object MetaModelPbSerdes {
 
       builder.build()
     }
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErPair].toBytes()
   }
 
   implicit class ErPairBatchToPbMessage(src: ErPairBatch) extends PbMessageSerializer {
     override def toProto[T >: PbMessage](): Meta.PairBatch = {
       val builder = Meta.PairBatch.newBuilder()
-        .addAllPairs(src.pairs.map(_.toProto()).asJava)
+        .addAllPairs(src.pairs.toList.map(_.toProto()).asJava)
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErPairBatch].toBytes()
   }
 
   implicit class ErStoreLocatorToPbMessage(src: ErStoreLocator) extends PbMessageSerializer {
@@ -138,21 +183,28 @@ object MetaModelPbSerdes {
         .setNamespace(src.namespace)
         .setName(src.name)
         .setPath(src.path)
+        .setTotalPartitions(src.totalPartitions)
         .setPartitioner(src.partitioner)
         .setSerdes(src.serdes)
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErStoreLocator].toBytes()
   }
 
   implicit class ErStoreToPbMessage(src: ErStore) extends PbMessageSerializer {
     override def toProto[T >: PbMessage](): Meta.Store = {
       val builder = Meta.Store.newBuilder()
         .setStoreLocator(src.storeLocator.toProto())
-        .addAllPartitions(src.partitions.map(_.toProto()).asJava)
+        .addAllPartitions(src.partitions.toList.map(_.toProto()).asJava)
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErStore].toBytes()
   }
 
   implicit class ErPartitionToPbMessage(src: ErPartition) extends PbMessageSerializer {
@@ -160,10 +212,13 @@ object MetaModelPbSerdes {
       val builder = Meta.Partition.newBuilder()
         .setId(src.id)
         .setStoreLocator(src.storeLocator.toProto())
-        .setNode(src.node.toProto())
+        .setProcessor(src.processor.toProto())
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErPartition].toBytes()
   }
 
   implicit class ErJobToPbMessage(src: ErJob) extends PbMessageSerializer {
@@ -171,12 +226,15 @@ object MetaModelPbSerdes {
       val builder = Meta.Job.newBuilder()
         .setId(src.id)
         .setName(src.name)
-        .addAllInputs(src.inputs.map(_.toProto()).asJava)
-        .addAllOutputs(src.outputs.map(_.toProto()).asJava)
-        .addAllFunctors(src.functors.map(_.toProto()).asJava)
+        .addAllInputs(src.inputs.toList.map(_.toProto()).asJava)
+        .addAllOutputs(src.outputs.toList.map(_.toProto()).asJava)
+        .addAllFunctors(src.functors.toList.map(_.toProto()).asJava)
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErJob].toBytes()
   }
 
   implicit class ErTaskToPbMessage(src: ErTask) extends PbMessageSerializer {
@@ -184,31 +242,57 @@ object MetaModelPbSerdes {
       val builder = Meta.Task.newBuilder()
         .setId(src.id)
         .setName(src.name)
-        .addAllInputs(src.inputs.map(_.toProto()).asJava)
-        .addAllOutputs(src.outputs.map(_.toProto()).asJava)
+        .addAllInputs(src.inputs.toList.map(_.toProto()).asJava)
+        .addAllOutputs(src.outputs.toList.map(_.toProto()).asJava)
         .setJob(src.job.toProto())
 
       builder.build()
     }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErTask].toBytes()
+  }
+
+  implicit class ErSessionMetaToPbMessage(src: ErSessionMeta) extends PbMessageSerializer {
+    override def toProto[T >: PbMessage](): Meta.SessionMeta = {
+      val builder = Meta.SessionMeta.newBuilder()
+        .setId(src.id)
+        .setName(src.name)
+        .setStatus(src.status)
+        .putAllOptions(src.options)
+        .setTag(src.tag)
+
+      builder.build()
+    }
+
+    override def toBytes(baseSerializable: BaseSerializable): Array[Byte] =
+      baseSerializable.asInstanceOf[ErSessionMeta].toBytes()
   }
 
   // deserializers
   implicit class ErFunctorFromPbMessage(src: Meta.Functor) extends PbMessageDeserializer {
-    override def fromProto[T >: RpcMessage](): ErFunctor = {
+    override def fromProto[T >: RpcMessage](): ErFunctor =
       ErFunctor(name = src.getName, serdes = src.getSerdes, body = src.getBody.toByteArray)
-    }
+
+    override def fromBytes(bytes: Array[Byte]): ErFunctor =
+      Meta.Functor.parseFrom(bytes).fromProto()
   }
 
   implicit class ErPairFromPbMessage(src: Meta.Pair) extends PbMessageDeserializer {
-    override def fromProto[T >: RpcMessage](): ErPair = {
+    override def fromProto[T >: RpcMessage](): ErPair =
       ErPair(key = src.getKey.toByteArray, value = src.getValue.toByteArray)
-    }
+
+    override def fromBytes(bytes: Array[Byte]): ErPair =
+      Meta.Pair.parseFrom(bytes).fromProto()
   }
 
   implicit class ErPairBatchFromPbMessage(src: Meta.PairBatch) extends PbMessageDeserializer {
     override def fromProto[T >: RpcMessage](): ErPairBatch = {
-      ErPairBatch(pairs = src.getPairsList.asScala.map(_.fromProto()).toList)
+      ErPairBatch(pairs = src.getPairsList.asScala.map(_.fromProto()).toArray)
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErPairBatch =
+      Meta.PairBatch.parseFrom(bytes).fromProto()
   }
 
   implicit class ErStoreLocatorFromPbMessage(src: Meta.StoreLocator) extends PbMessageDeserializer {
@@ -218,41 +302,70 @@ object MetaModelPbSerdes {
         namespace = src.getNamespace,
         name = src.getName,
         path = src.getPath,
+        totalPartitions = src.getTotalPartitions,
         partitioner = src.getPartitioner,
         serdes = src.getSerdes)
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErStoreLocator =
+      Meta.StoreLocator.parseFrom(bytes).fromProto()
   }
 
   implicit class ErStoreFromPbMessage(src: Meta.Store) extends PbMessageDeserializer {
     override def fromProto[T >: RpcMessage](): ErStore = {
-      ErStore(storeLocator = src.getStoreLocator.fromProto(), src.getPartitionsList.asScala.map(_.fromProto()).toList)
+      ErStore(storeLocator = src.getStoreLocator.fromProto(), src.getPartitionsList.asScala.map(_.fromProto()).toArray)
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErStore =
+      Meta.Store.parseFrom(bytes).fromProto()
   }
 
   implicit class ErPartitionFromPbMessage(src: Meta.Partition) extends PbMessageDeserializer {
     override def fromProto[T >: RpcMessage](): ErPartition = {
-      ErPartition(id = src.getId, storeLocator = src.getStoreLocator.fromProto(), node = src.getNode.fromProto())
+      ErPartition(id = src.getId, storeLocator = src.getStoreLocator.fromProto(), processor = src.getProcessor.fromProto())
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErPartition =
+      Meta.Partition.parseFrom(bytes).fromProto()
   }
 
   implicit class ErJobFromPbMessage(src: Meta.Job) extends PbMessageDeserializer {
     override def fromProto[T >: RpcMessage](): ErJob = {
       ErJob(id = src.getId,
         name = src.getName,
-        inputs = src.getInputsList.asScala.map(_.fromProto()).toList,
-        outputs = src.getOutputsList.asScala.map(_.fromProto()).toList,
-        functors = src.getFunctorsList.asScala.map(_.fromProto()).toList)
+        inputs = src.getInputsList.asScala.map(_.fromProto()).toArray,
+        outputs = src.getOutputsList.asScala.map(_.fromProto()).toArray,
+        functors = src.getFunctorsList.asScala.map(_.fromProto()).toArray)
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErJob =
+      Meta.Job.parseFrom(bytes).fromProto()
   }
 
   implicit class ErTaskFromPbMessage(src: Meta.Task) extends PbMessageDeserializer {
     override def fromProto[T >: RpcMessage](): ErTask = {
       ErTask(id = src.getId,
         name = src.getName,
-        inputs = src.getInputsList.asScala.map(_.fromProto()).toList,
-        outputs = src.getOutputsList.asScala.map(_.fromProto()).toList,
+        inputs = src.getInputsList.asScala.map(_.fromProto()).toArray,
+        outputs = src.getOutputsList.asScala.map(_.fromProto()).toArray,
         job = src.getJob.fromProto())
     }
+
+    override def fromBytes(bytes: Array[Byte]): ErTask =
+      Meta.Task.parseFrom(bytes).fromProto()
   }
 
+  implicit class ErSessionMetaFromPbMessage(src: Meta.SessionMeta) extends PbMessageDeserializer {
+    override def fromProto[T >: RpcMessage](): ErSessionMeta = {
+      ErSessionMeta(id = src.getId,
+        name = src.getName,
+        status = src.getStatus,
+        options = src.getOptionsMap,
+        tag = src.getTag)
+    }
+
+    override def fromBytes(bytes: Array[Byte]): ErSessionMeta = {
+      Meta.SessionMeta.parseFrom(bytes).fromProto()
+    }
+  }
 }

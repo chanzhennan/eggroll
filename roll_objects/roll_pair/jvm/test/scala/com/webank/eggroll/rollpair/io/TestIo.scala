@@ -12,10 +12,19 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ *
  */
 
 package com.webank.eggroll.rollpair.io
 
+import java.nio.ByteBuffer
+
+import com.google.protobuf.ByteString
+import com.webank.eggroll.core.constant.{NetworkConstants, StoreTypes}
+import com.webank.eggroll.core.datastructure.LinkedBlockingBroker
+import com.webank.eggroll.core.meta.{ErStore, ErStoreLocator}
+import com.webank.eggroll.rollpair.client.RollPair
 import org.junit.Test
 
 import scala.collection.mutable.ListBuffer
@@ -23,13 +32,15 @@ import scala.collection.mutable.ListBuffer
 class TestIo {
   val partitionId = 1
   //val dbPath: String = "/tmp/eggroll/levelDb/ns/name/" + partitionId
+  //val rootPath = s"/tmp/eggroll/levelDb/ns"
+  val rootPath = s"/tmp/eggroll/${StoreTypes.ROLLPAIR_LEVELDB}/namespace"
 
-  val namePath = "/tmp/eggroll/levelDb/ns/name/"
-  val testPath = "/tmp/eggroll/levelDb/ns/test/"
-  val mapValuesPath: String = "/tmp/eggroll/levelDb/ns/testMapValues/"
-  val reducePath: String = "/tmp/eggroll/levelDb/ns/testReduce/"
-  val joinPath: String = "/tmp/eggroll/levelDb/ns/testJoin/"
-  val mapPath: String = "/tmp/eggroll/levelDb/ns/testMap/"
+  val namePath = s"${rootPath}/name/"
+  val testPath = s"${rootPath}/test/"
+  val mapValuesPath: String = s"${rootPath}/testMapValues/"
+  val reducePath: String = s"${rootPath}/testReduce/"
+  val joinPath: String = s"${rootPath}/testJoin/"
+  val mapPath: String = s"${rootPath}/testMap/"
   val dbPath = mapValuesPath
   val rocksDBSortedKVAdapter: RocksdbSortedKvAdapter = new RocksdbSortedKvAdapter(dbPath)
 
@@ -73,8 +84,30 @@ class TestIo {
   }
 
   @Test
+  def testPutBatch(): Unit = {
+    val input = ErStore(ErStoreLocator(storeType = StoreTypes.ROLLPAIR_LEVELDB, namespace = "namespace", name = "name"))
+    val rp = new RollPair(input)
+
+    var directBinPacketBuffer: ByteBuffer = ByteBuffer.allocateDirect(1<<10)
+    directBinPacketBuffer.put(NetworkConstants.TRANSFER_PROTOCOL_MAGIC_NUMBER)   // magic num
+    directBinPacketBuffer.put(NetworkConstants.TRANSFER_PROTOCOL_VERSION)     // protocol version
+    directBinPacketBuffer.putInt(4)   // header length
+    directBinPacketBuffer.putInt(16)  // body size
+    directBinPacketBuffer.putInt(4)   // key length (bytes)
+    directBinPacketBuffer.putInt(3)   // key
+    directBinPacketBuffer.putInt(4)   // value length (bytes)
+    directBinPacketBuffer.putInt(5)   // value
+
+    directBinPacketBuffer.flip()
+
+    val broker = new LinkedBlockingBroker[ByteString]()
+    broker.put(ByteString.copyFrom(directBinPacketBuffer))
+    rp.putBatch(broker)
+  }
+
+  @Test
   def testWriteMultipleKvBatch(): Unit = {
-    val path = testPath
+    val path = namePath
     for (p <- 0 until 4) {
       val partitionAdapter = new RocksdbSortedKvAdapter(path + p)
       val batch = ListBuffer[(Array[Byte], Array[Byte])]()
@@ -89,7 +122,7 @@ class TestIo {
 
   @Test
   def testIterateMultipleKvBatch(): Unit = {
-    val path = joinPath
+    val path = namePath
     println(s"path: ${path}")
 
     for (p <- 0 until 4) {

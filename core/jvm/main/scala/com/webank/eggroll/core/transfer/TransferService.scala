@@ -12,6 +12,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ *
  */
 
 package com.webank.eggroll.core.transfer
@@ -19,7 +21,7 @@ package com.webank.eggroll.core.transfer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue}
 
-import com.webank.eggroll.core.constant.StringConstants
+import com.webank.eggroll.core.constant.{StringConstants, TransferStatus}
 import com.webank.eggroll.core.datastructure.{Broker, LinkedBlockingBroker}
 import com.webank.eggroll.core.grpc.observer.BaseMFCCalleeRequestStreamObserver
 import com.webank.eggroll.core.grpc.server.GrpcServerWrapper
@@ -35,8 +37,8 @@ class GrpcTransferService extends TransferServiceGrpc.TransferServiceImplBase {
 
   /**
    */
-  override def send(responseObserver: StreamObserver[Transfer.TransferHeader]): StreamObserver[Transfer.Batch] = {
-    val serverCallStreamObserver = responseObserver.asInstanceOf[ServerCallStreamObserver[Transfer.TransferHeader]]
+  override def send(responseObserver: StreamObserver[Transfer.TransferBatch]): StreamObserver[Transfer.TransferBatch] = {
+    val serverCallStreamObserver = responseObserver.asInstanceOf[ServerCallStreamObserver[Transfer.TransferBatch]]
 
     serverCallStreamObserver.disableAutoInboundFlowControl()
 
@@ -53,43 +55,43 @@ class GrpcTransferService extends TransferServiceGrpc.TransferServiceImplBase {
 }
 
 object GrpcTransferService {
-  private val dataBuffer = TrieMap[String, Broker[Array[Byte]]]()
+  private val dataBuffer = TrieMap[String, Broker[Transfer.TransferBatch]]()
 
   def getOrCreateBroker(key: String,
                         maxCapacity: Int = -1,
-                        writeSignals: Int = 1): Broker[Array[Byte]] = this.synchronized {
+                        writeSignals: Int = 1): Broker[Transfer.TransferBatch] = this.synchronized {
     val finalSize = if (maxCapacity > 0) maxCapacity else 100
 
     if (!dataBuffer.contains(key)) {
       dataBuffer.put(key,
-        new LinkedBlockingBroker[Array[Byte]](maxCapacity = finalSize, writeSignals = writeSignals, name = key))
+        new LinkedBlockingBroker[Transfer.TransferBatch](maxCapacity = finalSize, writeSignals = writeSignals, name = key))
     }
     dataBuffer(key)
   }
 
-  def getBroker(key: String): Broker[Array[Byte]] = if (dataBuffer.contains(key)) dataBuffer(key) else null
+  def getBroker(key: String): Broker[Transfer.TransferBatch] = if (dataBuffer.contains(key)) dataBuffer(key) else null
 
   def containsBroker(key: String): Boolean = dataBuffer.contains(key)
 }
 
-class TransferSendCalleeRequestStreamObserver(callerNotifier: ServerCallStreamObserver[Transfer.TransferHeader],
+class TransferSendCalleeRequestStreamObserver(callerNotifier: ServerCallStreamObserver[Transfer.TransferBatch],
                                               wasReady: AtomicBoolean)
-  extends BaseMFCCalleeRequestStreamObserver[Transfer.Batch, Transfer.TransferHeader](callerNotifier, wasReady) {
+  extends BaseMFCCalleeRequestStreamObserver[Transfer.TransferBatch, Transfer.TransferBatch](callerNotifier, wasReady) {
   private var i = 0
 
-  private var broker: Broker[Array[Byte]] = _
+  private var broker: Broker[Transfer.TransferBatch] = _
   private var inited = false
   private var responseHeader: Transfer.TransferHeader = _
 
-  override def onNext(value: Transfer.Batch): Unit = {
+  override def onNext(value: Transfer.TransferBatch): Unit = {
     if (!inited) {
       broker = GrpcTransferService.getOrCreateBroker(value.getHeader.getTag)
       responseHeader = value.getHeader
       inited = true
     }
 
-    broker.put(value.getData.toByteArray)
-    if (value.getHeader.getStatus.equals(StringConstants.TRANSFER_END)) {
+    broker.put(value)
+    if (value.getHeader.getStatus.equals(TransferStatus.TRANSFER_END)) {
       broker.signalWriteFinish()
     }
 
@@ -97,7 +99,7 @@ class TransferSendCalleeRequestStreamObserver(callerNotifier: ServerCallStreamOb
   }
 
   override def onCompleted(): Unit = {
-    callerNotifier.onNext(responseHeader)
+    callerNotifier.onNext(Transfer.TransferBatch.newBuilder().setHeader(responseHeader).build())
     super.onCompleted()
   }
 }

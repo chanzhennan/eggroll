@@ -4,7 +4,7 @@
 #  you may not use this file except in compliance with the License.
 #  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#    http://www.apache.org/licenses/LICENSE-2.0
 #
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,9 +13,11 @@
 #  limitations under the License.
 
 import os
+import threading
 
+from eggroll.core.meta_model import ErStore, ErStoreLocator
 from eggroll.utils import log_utils
-
+from eggroll.core.client import ClusterManagerClient
 log_utils.setDirectory()
 LOGGER = log_utils.getLogger()
 
@@ -29,23 +31,23 @@ try:
 except:
   LOGGER.info("WRAN: failed to import lmdb")
 
-LMDB_MAP_SIZE = 16 * 4_096 * 244_140  # follows storage-service-cxx's config here
+LMDB_MAP_SIZE = 16 * 4_096 * 244_140    # follows storage-service-cxx's config here
 DEFAULT_DB = b'main'
 DELIMETER = '-'
 DELIMETER_ENCODED = DELIMETER.encode()
 
-
 class AdapterManager:
   pass
-
 
 class SortedKvAdapter(object):
   """
   Sorted key value store adapter
   """
-
   def __init__(self, options):
-    self._options = options
+    pass
+
+  def __del__(self):
+    pass
 
   def close(self):
     raise NotImplementedError()
@@ -60,6 +62,9 @@ class SortedKvAdapter(object):
     raise NotImplementedError()
 
   def put(self, key, value):
+    raise NotImplementedError()
+
+  def destroy_store(self, er_store_locator: ErStore):
     raise NotImplementedError()
 
   def __enter__(self):
@@ -85,7 +90,6 @@ class SortedKvWriteBatch:
   def __exit__(self, exc_type, exc_val, exc_tb):
     self.close()
 
-
 class SortedKvIterator:
   def close(self):
     raise NotImplementedError()
@@ -99,23 +103,22 @@ class SortedKvIterator:
   def __exit__(self, exc_type, exc_val, exc_tb):
     self.close()
 
-
 class LmdbIterator(SortedKvIterator):
   def __init__(self, adapter, cursor):
     LOGGER.info("create lmdb iterator")
     self.adapter = adapter
     self.cursor = cursor
 
-  # move cursor to the first key position
-  # return True if success or False if db is empty
+  #move cursor to the first key position
+  #return True if success or False if db is empty
   def first(self):
     return self.cursor.first()
 
-  # same as first() but last key position
+  #same as first() but last key position
   def last(self):
     return self.cursor.last()
 
-  # return the current key
+  #return the current key
   def key(self):
     return self.cursor.key()
 
@@ -124,7 +127,6 @@ class LmdbIterator(SortedKvIterator):
 
   def __iter__(self):
     return self.cursor.__iter__()
-
 
 class LmdbWriteBatch(SortedKvWriteBatch):
 
@@ -145,7 +147,12 @@ class LmdbWriteBatch(SortedKvWriteBatch):
     pass
 
 
-class LmdbAdapter(SortedKvAdapter):
+class LmdbSortedKvAdapter(SortedKvAdapter):
+  env_lock = threading.Lock()
+  env_dict = dict()
+  count_dict = dict()
+  sub_env_dict = dict()
+  txn_dict = dict()
 
   def get(self, key):
     return self.cursor.get(key)
@@ -153,30 +160,84 @@ class LmdbAdapter(SortedKvAdapter):
   def put(self, key, value):
     return self.txn.put(key, value)
 
-  def __init__(self, options):
-    LOGGER.info("lmdb adapter init")
-    super().__init__(options)
-    self.path = options["path"]
-    create_if_missing = bool(options.get("create_if_missing", "True"))
-    if create_if_missing:
-      os.makedirs(self.path, exist_ok=True)
-    self.db = lmdb.open(self.path, create=create_if_missing, max_dbs=128,
-                        sync=False, map_size=LMDB_MAP_SIZE, writemap=True)
-    self.sub_db = self.db.open_db(DEFAULT_DB)
-    self.txn = self.db.begin(db=self.sub_db, write=True)
-    self.cursor = self.txn.cursor()
+  def __init__(self, options: {}):
+    with LmdbSortedKvAdapter.env_lock:
+      LOGGER.info("lmdb adapter init")
+      self.cluster_client = ClusterManagerClient(opts={
+        'cluster_manager_host': 'localhost',
+        'cluster_manager_port': 4670,
+      })
+
+      super().__init__(options)
+      self.path = options["path"]
+      create_if_missing = bool(options.get("create_if_missing", "True"))
+      if self.path not in LmdbSortedKvAdapter.env_dict:
+        if create_if_missing:
+          os.makedirs(self.path, exist_ok=True)
+        LOGGER.info("path not in dict db path:{}".format(self.path))
+        self.env = lmdb.open(self.path, create=create_if_missing, max_dbs=128, sync=False, map_size=LMDB_MAP_SIZE, writemap=True)
+        self.sub_db = self.env.open_db(DEFAULT_DB)
+        self.txn = self.env.begin(db=self.sub_db, write=True)
+        LmdbSortedKvAdapter.count_dict[self.path] = 0
+        LmdbSortedKvAdapter.env_dict[self.path] = self.env
+        LmdbSortedKvAdapter.sub_env_dict[self.path] = self.sub_db
+        LmdbSortedKvAdapter.txn_dict[self.path] = self.txn
+      else:
+        LOGGER.info("path in dict:{}".format(self.path))
+        self.env = LmdbSortedKvAdapter.env_dict[self.path]
+        self.sub_db = LmdbSortedKvAdapter.sub_env_dict[self.path]
+        self.txn = LmdbSortedKvAdapter.txn_dict[self.path]
+      self.cursor = self.txn.cursor()
+      LmdbSortedKvAdapter.count_dict[self.path] = LmdbSortedKvAdapter.count_dict[self.path] + 1
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, exc_type, exc_val, exc_tb):
+    self.close()
+    with LmdbSortedKvAdapter.env_lock:
+      if self.env:
+        count = LmdbSortedKvAdapter.count_dict[self.path]
+        if not count or count - 1 <= 0:
+          LmdbSortedKvAdapter.txn_dict[self.path].commit()
+          LmdbSortedKvAdapter.env_dict[self.path].close()
+          del LmdbSortedKvAdapter.txn_dict[self.path]
+          del LmdbSortedKvAdapter.env_dict[self.path]
+          del LmdbSortedKvAdapter.sub_env_dict[self.path]
+          del LmdbSortedKvAdapter.count_dict[self.path]
+        else:
+          LmdbSortedKvAdapter.count_dict[self.path] = count - 1
+        self.env = None
+
+  def __del__(self):
+    with LmdbSortedKvAdapter.env_lock:
+      if self.env:
+        count = LmdbSortedKvAdapter.count_dict[self.path]
+        if not count or count - 1 <= 0:
+          del LmdbSortedKvAdapter.env_dict[self.path]
+          del LmdbSortedKvAdapter.sub_env_dict[self.path]
+          del LmdbSortedKvAdapter.txn_dict[self.path]
+          del LmdbSortedKvAdapter.count_dict[self.path]
+        else:
+          LmdbSortedKvAdapter.count_dict[self.path] = count - 1
+
+  def get_sub_db(self):
+    return self.env.open_db(DEFAULT_DB)
 
   def close(self):
     self.cursor.close()
-    self.txn.commit()
-    self.db.close()
-    del self.sub_db
 
   def iteritems(self):
     return LmdbIterator(self, self.cursor)
 
   def new_batch(self):
     return LmdbWriteBatch(self, self.txn)
+
+  def destroy_store(self, er_store: ErStore):
+    with LmdbSortedKvAdapter.env_lock:
+      self.cluster_client.delete_store(input=er_store)
+      import os
+      os.removedirs(self.path)
 
 
 class RocksdbWriteBatch(SortedKvWriteBatch):
@@ -186,11 +247,8 @@ class RocksdbWriteBatch(SortedKvWriteBatch):
     self.adapter = adapter
     self.key = None
     self.value = None
-    self.serde = None
 
   def put(self, k, v):
-    # from eggroll.api.utils import eggroll_serdes
-    # self.serde = eggroll_serdes.get_serdes()
     self.key = k
     self.value = v
     self.batch.put(k, v)
@@ -209,7 +267,6 @@ class RocksdbWriteBatch(SortedKvWriteBatch):
       del self.batch
       self.batch = None
 
-
 class RocksdbIterator(SortedKvIterator):
   def __init__(self, adapter):
     self.adapter = adapter
@@ -217,7 +274,6 @@ class RocksdbIterator(SortedKvIterator):
     self.it.seek_to_first()
 
   def first(self):
-    print("first called")
     count = 0
     self.it.seek_to_first()
     for k, v in self.it:
@@ -242,23 +298,59 @@ class RocksdbIterator(SortedKvIterator):
   def __iter__(self):
     return self.it
 
-
 class RocksdbSortedKvAdapter(SortedKvAdapter):
+  env_lock = threading.Lock()
+  env_dict = dict()
+  count_dict = dict()
 
   def __init__(self, options):
     """
     :param options:
-        path: absolute local fs path
-        create_if_missing: default true
+      path: absolute local fs path
+      create_if_missing: default true
     """
-    super().__init__(options)
-    self.path = options["path"]
-    opts = rocksdb.Options()
-    opts.create_if_missing = bool(options.get("create_if_missing", "True"))
-    opts.compression = rocksdb.CompressionType.no_compression
-    if opts.create_if_missing:
-      os.makedirs(self.path, exist_ok=True)
-    self.db = rocksdb.DB(self.path, opts)
+    with RocksdbSortedKvAdapter.env_lock:
+      super().__init__(options)
+      self.path = options["path"]
+      opts = rocksdb.Options()
+      opts.create_if_missing = bool(options.get("create_if_missing", "True"))
+      opts.compression = rocksdb.CompressionType.no_compression
+      if self.path not in RocksdbSortedKvAdapter.env_dict:
+        if opts.create_if_missing:
+          os.makedirs(self.path, exist_ok=True)
+        self.db = rocksdb.DB(self.path, opts)
+        LOGGER.info("path not in dict db path:{}".format(self.path))
+        RocksdbSortedKvAdapter.count_dict[self.path] = 0
+        RocksdbSortedKvAdapter.env_dict[self.path] = self.db
+      else:
+        LOGGER.info("path in dict:{}".format(self.path))
+        self.db = RocksdbSortedKvAdapter.env_dict[self.path]
+    RocksdbSortedKvAdapter.count_dict[self.path] = RocksdbSortedKvAdapter.count_dict[self.path] + 1
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, exc_type, exc_val, exc_tb):
+    LOGGER.info("exit")
+    with RocksdbSortedKvAdapter.env_lock:
+      if self.db:
+        count = RocksdbSortedKvAdapter.count_dict[self.path]
+        if not count or count - 1 <= 0:
+          del RocksdbSortedKvAdapter.env_dict[self.path]
+          del RocksdbSortedKvAdapter.count_dict[self.path]
+        else:
+          RocksdbSortedKvAdapter.count_dict[self.path] = RocksdbSortedKvAdapter.count_dict[self.path] - 1
+    self.close()
+
+  def __del__(self):
+    with RocksdbSortedKvAdapter.env_lock:
+      if self.db:
+        count = RocksdbSortedKvAdapter.count_dict[self.path]
+        if not count or count - 1 <= 0:
+          del RocksdbSortedKvAdapter.env_dict[self.path]
+          del RocksdbSortedKvAdapter.count_dict[self.path]
+        else:
+          RocksdbSortedKvAdapter.count_dict[self.path] = count - 1
 
   def get(self, key):
     return self.db.get(key)
